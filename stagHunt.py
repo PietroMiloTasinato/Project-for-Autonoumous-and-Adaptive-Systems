@@ -3,14 +3,14 @@ import gymnasium_stag_hunt
 import time
 import tensorflow as tf
 import numpy as np
-import matplotlib.pyplot as plt
+from statistics import stdev, mean
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Flatten, Dense
 
 def one_hot_encoder(input: list = [], entities: int = 0, dimX: int = 5, dimY: int = 5):
     ret = []
 
-    for e in range(entities):
+    for _ in range(entities):
         ret.append(np.zeros(dimX*dimY))
     
     # since the env is 2D, I will never have an odd number of coordinates
@@ -20,28 +20,6 @@ def one_hot_encoder(input: list = [], entities: int = 0, dimX: int = 5, dimY: in
     
     #for shape consistency, we return a tensor
     return tf.constant(ret)
-
-def distance_reward(old_position: list, new_position: list):
-    old_pos_1 = [old_position[0], old_position[1]]
-    old_pos_2 = [old_position[2], old_position[3]]
-    
-    new_pos_1 = [new_position[0], old_position[1]]
-    new_pos_2 = [new_position[2], new_position[3]]
-    
-    old_pos_s = [old_position[4], old_position[5]]
-    new_pos_s = [new_position[4], new_position[5]]
-    
-    rew_1, rew_2 = False, False
-
-    if(np.sqrt( np.square(old_pos_1[0] - old_pos_s[0]) + np.square(old_pos_1[1] - old_pos_s[1])) > np.sqrt( np.square(new_pos_1[0] - new_pos_s[0]) + np.square(new_pos_1[1] - new_pos_s[1]))):
-        rew_1 = True
-
-    if(np.sqrt( np.square(old_pos_2[0] - old_pos_s[0]) + np.square(old_pos_2[1] - old_pos_s[1])) > np.sqrt( np.square(new_pos_2[0] - new_pos_s[0]) + np.square(new_pos_2[1] - new_pos_s[1]))):
-        rew_2 = True
-
-    return rew_1, rew_2
-
-
 
 #Move encoding for stag hunt:
 
@@ -57,62 +35,65 @@ entities = 5
 # player 1 policy model
 pl1_pi_model = Sequential([
     Flatten(input_shape=(entities, 25)),
-    Dense(64, activation = 'linear'),
-    Dense(64, activation = 'tanh'),
-    Dense(64, activation = 'linear'),
-    Dense(64, activation = 'tanh'),
-
+    #Dense(128, activation = 'linear'),
+    Dense(128, activation = 'relu'),
+    #Dense(64, activation = 'linear'),
+    Dense(64, activation = 'relu'),
     Dense(5, activation='softmax'),
     ])
 
 # player 1 baseline model, smaller and simpler than policy model, we want a scalar output so output_dim = 1
 pl1_bl_model = Sequential([
     Flatten(input_shape=(entities, 25)),
-    Dense(64, activation = 'tanh'),
+    Dense(128, activation = 'relu'),
+    Dense(64, activation = 'relu'),
     Dense(1, activation = 'linear'),
 ])
 
 # player 2 policy model
 pl2_pi_model = Sequential([
     Flatten(input_shape=(entities, 25)),
-    Dense(64, activation = 'linear'),
-    Dense(64, activation = 'tanh'),
-    Dense(64, activation = 'linear'),
-    Dense(64, activation = 'tanh'),
-    
+    #Dense(64, activation = 'linear'),
+    Dense(128, activation = 'relu'),
+    #Dense(64, activation = 'linear'),
+    Dense(64, activation = 'relu'),
     Dense(5, activation='softmax'),
     ])
 
 # player 2 baseline model, smaller and simpler than policy model, we want a scalar output so output_dim = 1
 pl2_bl_model = Sequential([
     Flatten(input_shape = (entities, 25)),
-    Dense(64, activation = 'tanh'),
+    Dense(128, activation = 'relu'),
+    Dense(64, activation = 'relu'),
     Dense(1, activation = 'linear'),
 ])
 
-# note: we use Adam because it implements 
-pl1_pi_opt = tf.keras.optimizers.Adam(0.01)
-pl1_bl_opt = tf.keras.optimizers.Adam(0.01)
-pl2_pi_opt = tf.keras.optimizers.Adam(0.01)
-pl2_bl_opt = tf.keras.optimizers.Adam(0.01)
+# note: we use Adam because it implements
+pl1_pi_opt = tf.keras.optimizers.Adam(1e-3)
+pl1_bl_opt = tf.keras.optimizers.Adam(1e-2)
+pl2_pi_opt = tf.keras.optimizers.Adam(1e-3)
+pl2_bl_opt = tf.keras.optimizers.Adam(1e-2)
 
 
 def training_step(pi_model, bl_model, states, actions, returns, pi_opt, bl_opt):
-
+    
     with tf.GradientTape() as pi_tape, tf.GradientTape() as bl_tape:
 
         # forward pass for the two models
         bl_value = bl_model(states)  # approximation od the value function
-        
+        bl_value = tf.squeeze(bl_value, axis=-1)
+
         action_probs = pi_model(states)  # action probabilities for a given state and a fixed policy
+
+        print("explained variance for current epoch and current player:" ,1 - tf.math.reduce_variance(returns - bl_value) / tf.math.reduce_variance(returns))
         
-        entropy = -tf.reduce_sum(action_probs*tf.math.log(action_probs))
+        entropy = -tf.reduce_mean(tf.reduce_sum(action_probs*tf.math.log(action_probs + 1e-8), axis = -1))
+
+        print("shapes: ", bl_value.shape, returns.shape)
 
         # calculating advantage from the baseline model
-        bl_value = tf.squeeze(bl_value, axis=-1)
-        advantages = returns - bl_value
-        advantages = tf.stop_gradient(advantages)
-        #print(advantages)
+        advantages = tf.stop_gradient(returns - bl_value)
+        print("advantages for current epoch, mean: ", mean(advantages.numpy()), " and stddev: ", stdev(advantages.numpy()))
 
         # note: the masking is needed 
         action_masks = tf.one_hot(actions, action_probs.shape[-1])
@@ -121,7 +102,7 @@ def training_step(pi_model, bl_model, states, actions, returns, pi_opt, bl_opt):
 
         #compute loss
         pi_loss = -tf.reduce_mean(log_probs * advantages) # loss given by the REINFORCE with baseline formula
-        tot_pi_loss = pi_loss - 0.05*entropy
+        tot_pi_loss = pi_loss - (1e-3)*entropy
         bl_loss = tf.reduce_mean(tf.square(returns - bl_value)) # MSE
         #print(pi_loss, bl_loss)
 
@@ -158,7 +139,7 @@ def compute_returns(rewards, discount_rate):
         cm_rew = r + discount_rate * cm_rew
         returns.insert(0, cm_rew)
     
-    return returns
+    return tf.cast(tf.constant(returns), dtype=tf.float32)
  
 """
         # Env Specific
@@ -172,56 +153,55 @@ def compute_returns(rewards, discount_rate):
         }
 """
 
-env = gym.make("StagHunt-Hunt-v0", obs_type='coords', stag_follows = False, stag_reward = 10.0 ,enable_multiagent = True, flip_obs = False, max_timesteps=10000)  # you can pass config parameters here
-#initialization step
-obs, info = env.reset()
-
 states, pl1_actions, pl2_actions, pl1_rewards, pl2_rewards = [], [], [], [], []
 
-counter: int = 0
-s1, s2 = 0,0
-active1, active2 = True, True
 
-episode: int = 70
-epoch: int = 15
+flip, active1, active2 = True, True, True
 
-state = one_hot_encoder(obs[0], entities, 5, 5)
+episode_len: int = 400
+num_updates: int = 40
 
-old_pos = obs[0]
+for epo in range(num_updates):
 
-for epo in range(epoch):
-    for epi in range(episode):    
-        
+    sole_hunt_p1, sole_hunt_p2, plant_p1, plant_p2, hunt= 0, 0, 0, 0, 0
+
+    env = gym.make("StagHunt-Hunt-v0", obs_type='coords', stag_follows = False, stag_reward =5.0 ,enable_multiagent = True, flip_obs = False, max_timesteps=10000)  # you can pass config parameters here
+    #initialization step
+    obs, info = env.reset()
+
+    state = one_hot_encoder(obs[0], entities, 5, 5)
+
+    for epi in range(episode_len):    
+
+        state = one_hot_encoder(obs[0], entities, 5, 5)
+        states.append(state)
+
         pl1_action = select_action(pl1_pi_model, state)
         pl2_action = select_action(pl2_pi_model, state)
 
         obs, reward, done, trunc, info = env.step([pl1_action, pl2_action])
-        #obs is a tensor, rewards is a tuple info is a dict, done and trunc are bool
+        #obs is a shape, rewards is a tuple info is a dict, done and trunc are bool
 
         if(done or trunc):
             print("max number of moves reached")
             exit(1)
 
-        state = one_hot_encoder(obs[0], entities, 5, 5)
 
-        states.append(state)
         pl1_actions.append(pl1_action)
         pl2_actions.append(pl2_action)
         
-        rew_1, rew_2 = distance_reward(old_pos, obs[0])
-        old_pos = obs[0]
 
         if(isinstance(reward, tuple)):
 
-            if(rew_1):
-                pl1_rewards.append(reward[0])
-            else:
-                pl1_rewards.append(reward[0])
             
-            if(rew_2):
-                pl2_rewards.append(reward[1])
-            else:
-                pl2_rewards.append(reward[1])
+            pl1_rewards.append(reward[0])
+            pl2_rewards.append(reward[1])
+
+            if(reward[0]== 1): plant_p1 += 1
+            if(reward[0]== -5): sole_hunt_p1 += 1
+            if(reward[0]== 5): hunt += 1
+            if(reward[1]== 1): plant_p2 += 1
+            if(reward[1]== -5): sole_hunt_p2 += 1
     
         else: 
             print("rewards error")
@@ -233,22 +213,6 @@ for epo in range(epoch):
     stacked_states= tf.stack(states)
     #print("stacked states shape:", stacked_states.shape)
     
-    """
-    if(epo % 3 == 0):
-        active1 = True
-        active2 = True
-    else:
-        if(s1 < 2 and s2 > 0):
-            active1 = True
-            active2 = False
-            s1 += 1
-            s2 -= 1
-        else:
-            active1 = False
-            active2 = True
-            s1 -= 1
-            s2 += 1
-"""
 
     if (active1):
         pi_loss, bl_loss = training_step(pl1_pi_model, pl1_bl_model, states=stacked_states, actions=pl1_actions, returns=compute_returns(pl1_rewards, 0.99), pi_opt=pl1_pi_opt, bl_opt=pl1_bl_opt)
@@ -256,7 +220,23 @@ for epo in range(epoch):
     if(active2): 
         pi_loss, bl_loss = training_step(pl2_pi_model, pl2_bl_model, states=stacked_states, actions=pl2_actions, returns=compute_returns(pl2_rewards, 0.99), pi_opt=pl2_pi_opt, bl_opt=pl2_bl_opt)
         print("for epoch: ", epo, " for player 2 we have a policy loss: ", pi_loss, " and a baseline loss: ", bl_loss)
-    
+
+    """
+    #freezing window implementation
+    window_len: int = 8
+    if(epo % window_len == 0):
+        flip = not(flip)
+    else:
+        if(flip):
+            active1 = True
+            active2 = False
+        else:
+            active1 = False
+            active2 = True
+    """
+
+    print("nuber of successful hunts: ", hunt, " number of unsuccessful hunts for player 1: ", sole_hunt_p1, " and for player 2: ", sole_hunt_p2)
+    print("number of times player 1 harvested plants: ", plant_p1, " number of times player 2 harvested plants:", plant_p2)
     
 
     tot1, tot2 = 0, 0
@@ -277,5 +257,5 @@ for epo in range(epoch):
     pl1_rewards.clear()
     pl2_rewards.clear()
 
-env.close()
+    env.close()
 
