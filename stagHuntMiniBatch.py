@@ -1,7 +1,5 @@
 import gymnasium as gym
 import gymnasium_stag_hunt
-import time
-from matplotlib import pyplot as plt
 import tensorflow as tf
 import numpy as np
 from statistics import stdev, mean
@@ -92,7 +90,7 @@ pl2_bl_model = Sequential([
     Dense(1, activation = 'linear'),
 ])
 
-# note: we use Adam because it implements
+# note: we use Adam because it implements 
 pl1_pi_opt = tf.keras.optimizers.Adam(1e-3)
 pl1_bl_opt = tf.keras.optimizers.Adam(1e-2)
 pl2_pi_opt = tf.keras.optimizers.Adam(1e-3)
@@ -179,8 +177,8 @@ def compute_returns(rewards, discount_rate):
     return tf.cast(tf.constant(returns), dtype=tf.float32)
 
 
-states, pl1_actions, pl2_actions, pl1_rewards, pl2_rewards, raw_pl1_rew, raw_pl2_rew = [], [], [], [], [], [], []
-pl1_returns, pl2_returns, pl1_raw_ret, pl2_raw_ret = [], [], [], []
+states, pl1_actions, pl2_actions, pl1_rewards, pl2_rewards, = [], [], [], [], []
+pl1_returns, pl2_returns = [], []
 
 flip, active1, active2 = True, True, True
 
@@ -190,7 +188,6 @@ epoch_batch: int = 8
 
 nrows = int(np.sqrt(num_updates))
 ncols = nrows * 2
-fig, ax = plt.subplots(nrows= nrows, ncols=ncols)
 
 for epo in range(num_updates):
 
@@ -199,7 +196,6 @@ for epo in range(num_updates):
     #try scaling the mauling punishment to not discourage early exploration:
     progress = epo / num_updates
     mauling_punishment = -1.0 - (4.0 * progress)
-    #mauling_punishment = -1
     stag_reward = 10.0 - (5.0 * progress)
     
 
@@ -244,8 +240,6 @@ for epo in range(num_updates):
 
                 pl1_rewards.append(reward[0] + shaping_factor)
                 pl2_rewards.append(reward[1] + shaping_factor)
-                raw_pl1_rew.append(reward[0])
-                raw_pl2_rew.append(reward[1])
 
                 if(reward[0]== 1): plant_p1 += 1
                 if(reward[0]== mauling_punishment): sole_hunt_p1 += 1
@@ -264,13 +258,8 @@ for epo in range(num_updates):
         pl1_returns.append(compute_returns(pl1_rewards, 0.99))
         pl2_returns.append(compute_returns(pl2_rewards, 0.99))
 
-        pl1_raw_ret.append(compute_returns(raw_pl1_rew, 0.99))
-        pl2_raw_ret.append(compute_returns(raw_pl2_rew, 0.99))
-
         pl1_rewards.clear()
         pl2_rewards.clear()
-        raw_pl1_rew.clear()
-        raw_pl2_rew.clear()
                     
         env.close()
 
@@ -280,8 +269,7 @@ for epo in range(num_updates):
     #    if(not(sanity_check[j] == pl1_returns[-1][j])): print("error: ", sanity_check[j], " vs ", pl1_returns[-1][j])
     
     pl_returns_ten = tf.keras.ops.concatenate(pl1_returns, axis =-1)
-    pl_raw_ret_ten = tf.keras.ops.concatenate(pl1_raw_ret, axis =-1)
-
+    
     entropy_coeff = (1e-3)/(1+hunt)
 
     pi_loss = train_actor(pl1_pi_model, pl1_bl_model, states=stacked_states, actions=pl1_actions, returns=pl_returns_ten, pi_opt=pl1_pi_opt, entropy_coeff=entropy_coeff)
@@ -291,43 +279,23 @@ for epo in range(num_updates):
     bl_value = tf.squeeze(pl1_bl_model(stacked_states), axis =-1)
     
     print("explained variance for current epoch and player 1:" ,1 - tf.math.reduce_variance(pl_returns_ten - bl_value) / tf.math.reduce_variance(pl_returns_ten))
-    #print("explained variance for current epoch and player 1, raw returns:" ,1 - tf.math.reduce_variance(pl_raw_ret_ten - bl_value) / tf.math.reduce_variance(pl_raw_ret_ten))
-    ax[(epo%nrows), 2*int(epo/nrows)].scatter(pl_returns_ten, bl_value)
-
+    
 
     pl_returns_ten = tf.keras.ops.concatenate(pl2_returns, axis =-1)
-    pl_raw_ret_ten = tf.keras.ops.concatenate(pl2_raw_ret, axis =-1)
-
+    
     pi_loss = train_actor(pl2_pi_model, pl2_bl_model, states=stacked_states, actions=pl2_actions, returns=pl_returns_ten, pi_opt=pl2_pi_opt, entropy_coeff=entropy_coeff)
     bl_loss = train_baseline(pl2_bl_model, states=stacked_states, returns = pl_returns_ten, bl_opt = pl2_bl_opt)
     print("for epoch: ", epo, " for player 2 we have a policy loss: ", pi_loss, " and a baseline loss: ", bl_loss)
 
     bl_value = tf.squeeze(pl2_bl_model(stacked_states), axis =-1)
     print("explained variance for current epoch and player 2:" ,1 - tf.math.reduce_variance(pl_returns_ten - bl_value) / tf.math.reduce_variance(pl_returns_ten))
-    #print("explained variance for current epoch and player 2, raw returns:" ,1 - tf.math.reduce_variance(pl_raw_ret_ten - bl_value) / tf.math.reduce_variance(pl_raw_ret_ten))
-    ax[(epo%nrows), 2*int(epo/(nrows))+1].scatter(pl_returns_ten, bl_value)
-
 
     print("nuber of successful hunts: ", hunt, " number of unsuccessful hunts for player 1: ", sole_hunt_p1, " and for player 2: ", sole_hunt_p2)
     print("number of times player 1 harvested plants: ", plant_p1, " number of times player 2 harvested plants:", plant_p2)
     print("reward for pl1:", (hunt*5 +plant_p1*1 - sole_hunt_p1*5)/epoch_batch)
     print("reward for pl2:", (hunt*5 +plant_p2*1 - sole_hunt_p2*5)/epoch_batch)
 
-
-    """
-    tot1, tot2 = 0, 0
-    for t in reversed(pl1_rewards):
-        #print("reward for player 1: ", t)
-        tot1 += t
-    for t in reversed(pl2_rewards):
-        #print("reward for player 2: ", t)
-        tot2 += t
-
-    print("epoch: ", epo, " player 1 total reward: ", tot1)
-    print("epoch: ", epo, " player 2 total reward: ", tot2)
-    """
     pl_returns_ten = 0
-    pl_raw_ret_ten = 0
 
     states.clear()
     stacked_states = tf.keras.ops.empty((2, 2))
@@ -335,9 +303,7 @@ for epo in range(num_updates):
     pl2_actions.clear()
     pl1_returns.clear()
     pl2_returns.clear()
-    pl1_raw_ret.clear()
-    pl2_raw_ret.clear()
 
-    print("\n")
+    print("")
 
-plt.show()
+#plt.show()
