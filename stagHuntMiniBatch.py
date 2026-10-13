@@ -2,7 +2,6 @@ import gymnasium as gym
 import gymnasium_stag_hunt
 import tensorflow as tf
 import numpy as np
-from statistics import stdev, mean
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Flatten, Dense
 
@@ -13,9 +12,9 @@ def distances(new_position: list):
     pos_s = [new_position[4], new_position[5]]
 
     
-    dist_1s = np.sqrt( np.square(pos_1[0] - pos_s[0]) + np.square(pos_1[1] - pos_s[1]))
-    dist_2s = np.sqrt( np.square(pos_2[0] - pos_s[0]) + np.square(pos_2[1] - pos_s[1]))
-    dist_21 = np.sqrt( np.square(pos_2[0] - pos_1[0]) + np.square(pos_2[1] - pos_1[1]))
+    dist_1s = np.sqrt( np.square(int(pos_1[0]) - int(pos_s[0])) + np.square(int(pos_1[1]) - int(pos_s[1])))
+    dist_2s = np.sqrt( np.square(int(pos_2[0]) - int(pos_s[0])) + np.square(int(pos_2[1]) - int(pos_s[1])))
+    dist_21 = np.sqrt( np.square(int(pos_2[0]) - int(pos_1[0])) + np.square(int(pos_2[1]) - int(pos_1[1])))
     
     return dist_1s, dist_2s, dist_21
 
@@ -130,12 +129,12 @@ def train_actor(pi_model, bl_model, states, actions, returns, pi_opt, entropy_co
 
         # calculating advantage from the baseline model
         advantages = tf.stop_gradient(returns - bl_value)
-        advantages = (advantages - mean(advantages.numpy())) / (stdev(advantages.numpy()) + 1e-8)
+        advantages = (advantages - np.mean(advantages.numpy())) / (np.std(advantages.numpy()) + 1e-8)
         #print("advantages for current epoch, mean: ", mean(advantages.numpy()), " and stddev: ", stdev(advantages.numpy()))
 
-        # note: the masking is needed 
+        # note: the masking is needed
         action_masks = tf.one_hot(actions, action_probs.shape[-1])
-        chosen_probs = tf.reduce_sum(action_probs * action_masks, axis=1)  
+        chosen_probs = tf.reduce_sum(action_probs * action_masks, axis=1)
         log_probs = tf.math.log(chosen_probs + 1e-8)  # epsilon avoids errors due to ln(0)
 
         #compute loss
@@ -183,7 +182,7 @@ pl1_returns, pl2_returns = [], []
 flip, active1, active2 = True, True, True
 
 episode_len: int = 400
-num_updates: int = 64
+num_updates: int = 160
 epoch_batch: int = 8
 
 nrows = int(np.sqrt(num_updates))
@@ -195,9 +194,8 @@ for epo in range(num_updates):
 
     #try scaling the mauling punishment to not discourage early exploration:
     progress = epo / num_updates
-    mauling_punishment = -1.0 - (4.0 * progress)
-    stag_reward = 10.0 - (5.0 * progress)
-    
+    mauling_punishment = -1#-1.0 - (4.0 * progress)
+    stag_reward = 5#10.0 - (5.0 * progress)
 
     for i in range(epoch_batch):
 
@@ -269,26 +267,25 @@ for epo in range(num_updates):
     #    if(not(sanity_check[j] == pl1_returns[-1][j])): print("error: ", sanity_check[j], " vs ", pl1_returns[-1][j])
     
     pl_returns_ten = tf.keras.ops.concatenate(pl1_returns, axis =-1)
+    bl_value = tf.squeeze(pl1_bl_model(stacked_states), axis =-1)    
+    print("explained variance for current ", epo," and player 1:" ,1 - tf.math.reduce_variance(pl_returns_ten - bl_value) / tf.math.reduce_variance(pl_returns_ten))
     
-    entropy_coeff = (1e-3)/(1+hunt)
+    entropy_coeff = 1e-2#(1e-3)/(1+hunt)
 
     pi_loss = train_actor(pl1_pi_model, pl1_bl_model, states=stacked_states, actions=pl1_actions, returns=pl_returns_ten, pi_opt=pl1_pi_opt, entropy_coeff=entropy_coeff)
-    bl_loss = train_baseline(pl1_bl_model, states=stacked_states, returns = pl_returns_ten, bl_opt = pl1_bl_opt)
-    print("for epoch: ", epo, " for player 1 we have a policy loss: ", pi_loss, " and a baseline loss: ", bl_loss)
+    bl_loss = train_baseline(pl1_bl_model, states=stacked_states, returns = pl_returns_ten, bl_opt = pl1_bl_opt, epochs=epoch_batch)
+    #print("for epoch: ", epo, " for player 1 we have a policy loss: ", pi_loss, " and a baseline loss: ", bl_loss)
 
-    bl_value = tf.squeeze(pl1_bl_model(stacked_states), axis =-1)
-    
-    print("explained variance for current epoch and player 1:" ,1 - tf.math.reduce_variance(pl_returns_ten - bl_value) / tf.math.reduce_variance(pl_returns_ten))
-    
 
     pl_returns_ten = tf.keras.ops.concatenate(pl2_returns, axis =-1)
+    bl_value = tf.squeeze(pl2_bl_model(stacked_states), axis =-1)
+    print("explained variance for current ",epo ," and player 2:" ,1 - tf.math.reduce_variance(pl_returns_ten - bl_value) / tf.math.reduce_variance(pl_returns_ten))
+
     
     pi_loss = train_actor(pl2_pi_model, pl2_bl_model, states=stacked_states, actions=pl2_actions, returns=pl_returns_ten, pi_opt=pl2_pi_opt, entropy_coeff=entropy_coeff)
-    bl_loss = train_baseline(pl2_bl_model, states=stacked_states, returns = pl_returns_ten, bl_opt = pl2_bl_opt)
-    print("for epoch: ", epo, " for player 2 we have a policy loss: ", pi_loss, " and a baseline loss: ", bl_loss)
+    bl_loss = train_baseline(pl2_bl_model, states=stacked_states, returns = pl_returns_ten, bl_opt = pl2_bl_opt, epochs=epoch_batch)
+    #print("for epoch: ", epo, " for player 2 we have a policy loss: ", pi_loss, " and a baseline loss: ", bl_loss)
 
-    bl_value = tf.squeeze(pl2_bl_model(stacked_states), axis =-1)
-    print("explained variance for current epoch and player 2:" ,1 - tf.math.reduce_variance(pl_returns_ten - bl_value) / tf.math.reduce_variance(pl_returns_ten))
 
     print("nuber of successful hunts: ", hunt, " number of unsuccessful hunts for player 1: ", sole_hunt_p1, " and for player 2: ", sole_hunt_p2)
     print("number of times player 1 harvested plants: ", plant_p1, " number of times player 2 harvested plants:", plant_p2)
