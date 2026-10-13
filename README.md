@@ -7,8 +7,7 @@ Project for the Adaptive and Autonomous Systems master course at Alma Mater Stud
 - TensorFlow 2
 - Gymnasium
 - NumPy
-- statistics
-
+  
 ## Description
 
 he goal of this project is to train two actors to solve a classic StagHunt environment. To achieve this, we will need to train two agents to cooperate in the hunt for the stag, so we will implement from scratch the REINFORCE algorithm, and then we will gradually improve on it, in order to improve performance and convergence.
